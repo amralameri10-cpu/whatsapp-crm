@@ -1,2 +1,0 @@
-# whatsapp-crm
-whatsapp-crm
