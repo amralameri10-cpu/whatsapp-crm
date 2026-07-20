@@ -11,7 +11,7 @@ import { Avatar, Badge, Switch } from '@/components/ui/misc';
 import { Button } from '@/components/ui/button';
 import { ChatListItem, MessageItem, PendingMessageItem } from '@/types';
 import { ArrowRight, Bot, Lock, MoreVertical, Phone } from 'lucide-react';
-import { usePusherChannel } from '@/hooks/use-pusher';
+import { useSSE } from '@/hooks/use-sse';
 import { toast } from 'sonner';
 
 export function ChatShell({
@@ -46,7 +46,7 @@ export function ChatShell({
   );
 
   // Realtime
-  usePusherChannel('team-channel', {
+  useSSE({
     'new-message': (data: { chatId: number; message: MessageItem }) => {
       if (activeChat && data.chatId === activeChat.id) {
         mutateMessages((cur = []) => [...cur, data.message], false);

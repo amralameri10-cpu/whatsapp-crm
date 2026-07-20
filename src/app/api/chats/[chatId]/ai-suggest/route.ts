@@ -1,3 +1,4 @@
+import { broadcastToTeam } from '@/lib/sse';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db/drizzle';
 import { chats, messages, pendingMessages, aiConfig } from '@/lib/db/schema';
@@ -5,7 +6,6 @@ import { eq, and, desc } from 'drizzle-orm';
 import { getUserContext } from '@/lib/db/queries';
 import { generateAIReply, type AIMessage } from '@/lib/ai/provider';
 import { sendTextAndPersist } from '@/lib/whatsapp/send-helpers';
-import { pusherServer } from '@/lib/pusher-server';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ chatId: string }> }) {
   const { chatId } = await params;
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cha
       .values({ chatId: id, authorId: ctx.user.id, text: replyText.trim(), source: 'ai', status: 'pending' })
       .returning();
 
-    await pusherServer.trigger('team-channel', 'pending-update', { chatId: id });
+    broadcastToTeam(/* teamId */ 0, 'pending-update', { chatId: id });
     return NextResponse.json({ pending: true, pendingMessage: pending });
   }
 

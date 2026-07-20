@@ -1,9 +1,10 @@
+import { broadcastToTeam } from '@/lib/sse';
 import { db } from '@/lib/db/drizzle';
 import { automations, chats, pendingMessages, aiConfig, messages } from '@/lib/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { sendTextAndPersist } from '@/lib/whatsapp/send-helpers';
 import { generateAIReply, type AIMessage } from '@/lib/ai/provider';
-import { pusherServer } from '@/lib/pusher-server';
+
 
 type FlowNode = {
   id: string;
@@ -139,7 +140,7 @@ async function deliverViaApprovalOrDirect(chat: typeof chats.$inferSelect, text:
 
   if (needsApproval) {
     await db.insert(pendingMessages).values({ chatId: chat.id, text, source, status: 'pending' });
-    await pusherServer.trigger('team-channel', 'pending-update', { chatId: chat.id });
+    broadcastToTeam(chat.teamId, 'pending-update', { chatId: chat.id });
     return;
   }
 

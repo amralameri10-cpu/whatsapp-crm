@@ -1,0 +1,106 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@/lib/db/drizzle';
+import { instances, chats, messages } from '@/lib/db/schema';
+import { eq, and } from 'drizzle-orm';
+import { getUserContext } from '@/lib/db/queries';
+import { getEvolutionConfig, EvolutionClient } from '@/lib/whatsapp/evolution-client';
+import { jidToPhone } from '@/lib/utils';
+
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const ctx = await getUserContext();
+  if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const instance = await db.query.instances.findFirst({
+    where: and(eq(instances.id, parseInt(id)), eq(instances.teamId, ctx.teamId)),
+  });
+  if (!instance) return NextResponse.json({ error: 'Instance not found' }, { status: 404 });
+
+  const config = await getEvolutionConfig(ctx.teamId);
+  const client = new EvolutionClient(config.apiUrl, config.apiKey);
+
+  let synced = 0;
+  let errors = 0;
+
+  try {
+    // جلب آخر المحادثات من Evolution
+    const chatsRes = await client.req(`/chat/findChats/${instance.instanceName}`, { method: 'POST', body: {} });
+    const chatList = Array.isArray(chatsRes) ? chatsRes : [];
+
+    for (const evoChat of chatList.slice(0, 50)) { // أول 50 محادثة
+      try {
+        const remoteJid = evoChat.id || evoChat.remoteJid;
+        if (!remoteJid || remoteJid === 'status@broadcast') continue;
+
+        const phone = jidToPhone(remoteJid);
+        const isGroup = remoteJid.endsWith('@g.us');
+        const name = evoChat.name || evoChat.pushName || phone;
+
+        // إنشاء المحادثة لو ما موجودة
+        let chat = await db.query.chats.findFirst({
+          where: (c, { and, eq }) => and(eq(c.remoteJid, remoteJid), eq(c.instanceId, instance.id)),
+        });
+
+        if (!chat) {
+          const [newChat] = await db.insert(chats).values({
+            teamId: instance.teamId,
+            instanceId: instance.id,
+            remoteJid,
+            name,
+            phoneNumber: isGroup ? null : phone,
+            isGroup,
+            lastMessageText: evoChat.lastMessage?.conversation || null,
+            lastMessageAt: evoChat.lastMessage?.messageTimestamp
+              ? new Date(Number(evoChat.lastMessage.messageTimestamp) * 1000) : null,
+            unreadCount: evoChat.unreadCount || 0,
+          }).returning();
+          chat = newChat;
+        }
+
+        // جلب آخر رسائل هذه المحادثة
+        try {
+          const msgsRes = await client.req(`/chat/findMessages/${instance.instanceName}`, {
+            method: 'POST',
+            body: { where: { key: { remoteJid } }, limit: 30 },
+          });
+
+          const msgList = msgsRes?.messages?.records || msgsRes?.records || [];
+
+          for (const msg of msgList) {
+            if (!msg?.key?.id) continue;
+            const m = msg.message || {};
+            let text: string | null = null;
+            let messageType = 'text';
+
+            if (m.conversation) text = m.conversation;
+            else if (m.extendedTextMessage?.text) text = m.extendedTextMessage.text;
+            else if (m.imageMessage) { messageType = 'image'; text = m.imageMessage.caption || null; }
+            else if (m.videoMessage) { messageType = 'video'; }
+            else if (m.audioMessage) { messageType = 'audio'; }
+            else if (m.documentMessage) { messageType = 'document'; text = m.documentMessage.fileName || null; }
+
+            const timestamp = msg.messageTimestamp
+              ? new Date(Number(msg.messageTimestamp) * 1000) : new Date();
+
+            await db.insert(messages).values({
+              id: msg.key.id,
+              chatId: chat.id,
+              fromMe: !!msg.key.fromMe,
+              senderName: msg.pushName || null,
+              messageType, text,
+              status: 'delivered',
+              timestamp,
+            }).onConflictDoNothing();
+          }
+        } catch { /* رسائل المحادثة اختيارية */ }
+
+        synced++;
+      } catch { errors++; }
+    }
+
+    return NextResponse.json({ success: true, synced, errors });
+  } catch (e: any) {
+    console.error('[Sync]', e.message);
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}

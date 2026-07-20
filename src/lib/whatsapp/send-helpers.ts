@@ -2,7 +2,7 @@ import { db } from '@/lib/db/drizzle';
 import { chats, messages, instances } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { getEvolutionConfig, EvolutionClient } from './evolution-client';
-import { pusherServer } from '@/lib/pusher-server';
+import { broadcastToTeam } from '@/lib/sse';
 import { jidToPhone } from '@/lib/utils';
 import { randomUUID } from 'crypto';
 
@@ -14,66 +14,40 @@ export async function sendTextAndPersist(chatId: number, text: string) {
   if (!instance) throw new Error('Instance not found');
 
   const config = await getEvolutionConfig(chat.teamId);
-  if (!config.apiUrl || !config.apiKey) {
-    throw new Error('Evolution API not configured');
-  }
+  if (!config.apiUrl || !config.apiKey) throw new Error('Evolution API not configured');
 
   const client = new EvolutionClient(config.apiUrl, config.apiKey);
   const phone = jidToPhone(chat.remoteJid);
 
   let evoResult: any = null;
   let status: 'sent' | 'failed' = 'sent';
-
   try {
     evoResult = await client.sendText(instance.instanceName, phone, text);
   } catch (e: any) {
-    console.error('[sendTextAndPersist]', e.message);
+    console.error('[sendText]', e.message);
     status = 'failed';
   }
 
   const messageId = evoResult?.key?.id || `local_${randomUUID()}`;
   const timestamp = new Date();
 
-  const [newMessage] = await db
-    .insert(messages)
-    .values({
-      id: messageId,
-      chatId,
-      fromMe: true,
-      messageType: 'text',
-      text,
-      status,
-      timestamp,
-    })
-    .onConflictDoNothing()
-    .returning();
+  const [newMessage] = await db.insert(messages).values({
+    id: messageId, chatId, fromMe: true,
+    messageType: 'text', text, status, timestamp,
+  }).onConflictDoNothing().returning();
 
-  await db
-    .update(chats)
-    .set({
-      lastMessageText: text,
-      lastMessageAt: timestamp,
-      lastMessageFromMe: true,
-      updatedAt: timestamp,
-    })
-    .where(eq(chats.id, chatId));
+  await db.update(chats).set({
+    lastMessageText: text, lastMessageAt: timestamp,
+    lastMessageFromMe: true, updatedAt: timestamp,
+  }).where(eq(chats.id, chatId));
 
   if (newMessage) {
-    await pusherServer
-      .trigger('team-channel', 'new-message', {
-        chatId,
-        message: { ...newMessage, timestamp: timestamp.toISOString() },
-      })
-      .catch(() => {});
-
-    await pusherServer
-      .trigger('team-channel', 'chat-update', { chatId })
-      .catch(() => {});
+    broadcastToTeam(chat.teamId, 'new-message', {
+      chatId, message: { ...newMessage, timestamp: timestamp.toISOString() },
+    });
+    broadcastToTeam(chat.teamId, 'chat-update', { chatId });
   }
 
-  if (status === 'failed') {
-    throw new Error('فشل إرسال الرسالة عبر واتساب');
-  }
-
+  if (status === 'failed') throw new Error('فشل إرسال الرسالة');
   return newMessage;
 }

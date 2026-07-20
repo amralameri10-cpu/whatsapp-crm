@@ -1,9 +1,10 @@
+import { broadcastToTeam } from '@/lib/sse';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db/drizzle';
 import { pendingMessages, chats } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getUserContext } from '@/lib/db/queries';
-import { pusherServer } from '@/lib/pusher-server';
+
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .set({ status: 'rejected', reviewedBy: ctx.user.id, reviewedAt: new Date(), rejectionReason: body.reason || null })
     .where(eq(pendingMessages.id, pendingId));
 
-  await pusherServer.trigger('team-channel', 'pending-update', { chatId: pending.chatId });
+  broadcastToTeam(pending.chatId, 'pending-update', { chatId: pending.chatId });
 
   return NextResponse.json({ success: true });
 }

@@ -5,7 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { getUserContext } from '@/lib/db/queries';
 import { getEvolutionConfig, EvolutionClient } from '@/lib/whatsapp/evolution-client';
 import { jidToPhone } from '@/lib/utils';
-import { pusherServer } from '@/lib/pusher-server';
+import { broadcastToTeam } from '@/lib/sse';
 import { randomUUID } from 'crypto';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ chatId: string }> }) {
@@ -29,55 +29,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cha
   const file = formData.get('file') as File | null;
   if (!file) return NextResponse.json({ error: 'No file provided' }, { status: 400 });
 
-  const MAX_SIZE = 15 * 1024 * 1024; // 15 MB
-  if (file.size > MAX_SIZE) {
-    return NextResponse.json({ error: 'حجم الملف كبير جداً (الحد 15 MB)' }, { status: 400 });
+  if (file.size > 15 * 1024 * 1024) {
+    return NextResponse.json({ error: 'حجم الملف أكبر من 15 MB' }, { status: 400 });
   }
 
   const buffer = Buffer.from(await file.arrayBuffer());
   const base64 = buffer.toString('base64');
   const mime = file.type;
-
-  let mediatype: 'image' | 'video' | 'document' = 'document';
-  if (mime.startsWith('image/')) mediatype = 'image';
-  else if (mime.startsWith('video/')) mediatype = 'video';
-  else if (mime.startsWith('audio/')) {
-    // صوت - استخدم sendAudio
-    const config = await getEvolutionConfig(ctx.teamId);
-    const client = new EvolutionClient(config.apiUrl, config.apiKey);
-    const phone = jidToPhone(chat.remoteJid);
-
-    let evoResult: any = null;
-    let status: 'sent' | 'failed' = 'sent';
-    try {
-      evoResult = await client.sendAudio(instance.instanceName, phone, base64);
-    } catch { status = 'failed'; }
-
-    const messageId = evoResult?.key?.id || `local_${randomUUID()}`;
-    const timestamp = new Date();
-
-    const [newMessage] = await db.insert(messages).values({
-      id: messageId, chatId: id, fromMe: true,
-      messageType: 'audio', mediaMimetype: mime,
-      status, timestamp,
-    }).onConflictDoNothing().returning();
-
-    await db.update(chats).set({ lastMessageText: '🎤 صوت', lastMessageAt: timestamp, lastMessageFromMe: true }).where(eq(chats.id, id));
-    if (newMessage) {
-      await pusherServer.trigger('team-channel', 'new-message', { chatId: id, message: { ...newMessage, timestamp: timestamp.toISOString() } }).catch(() => {});
-      await pusherServer.trigger('team-channel', 'chat-update', { chatId: id }).catch(() => {});
-    }
-    return NextResponse.json({ success: true });
-  }
-
   const config = await getEvolutionConfig(ctx.teamId);
   const client = new EvolutionClient(config.apiUrl, config.apiKey);
   const phone = jidToPhone(chat.remoteJid);
 
+  let messageType: 'image' | 'video' | 'audio' | 'document' = 'document';
+  if (mime.startsWith('image/')) messageType = 'image';
+  else if (mime.startsWith('video/')) messageType = 'video';
+  else if (mime.startsWith('audio/')) messageType = 'audio';
+
   let evoResult: any = null;
   let status: 'sent' | 'failed' = 'sent';
+
   try {
-    evoResult = await client.sendMedia(instance.instanceName, phone, mediatype, base64, '', file.name);
+    if (messageType === 'audio') {
+      evoResult = await client.sendAudio(instance.instanceName, phone, base64);
+    } else {
+      evoResult = await client.sendMedia(instance.instanceName, phone, messageType, base64, '', file.name);
+    }
   } catch (e: any) {
     console.error('[send-media]', e.message);
     status = 'failed';
@@ -85,22 +61,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cha
 
   const messageId = evoResult?.key?.id || `local_${randomUUID()}`;
   const timestamp = new Date();
-  const caption = file.name;
+  const previewText =
+    messageType === 'image' ? '📷 صورة' :
+    messageType === 'video' ? '🎬 فيديو' :
+    messageType === 'audio' ? '🎤 صوت' :
+    `📎 ${file.name}`;
 
   const [newMessage] = await db.insert(messages).values({
-    id: messageId, chatId: id, fromMe: true,
-    messageType: mediatype,
+    id: messageId,
+    chatId: id,
+    fromMe: true,
+    messageType,
     mediaMimetype: mime,
-    mediaCaption: caption,
-    status, timestamp,
+    mediaCaption: file.name,
+    status,
+    timestamp,
   }).onConflictDoNothing().returning();
 
-  const preview = mediatype === 'image' ? '📷 صورة' : mediatype === 'video' ? '🎬 فيديو' : `📎 ${caption}`;
-  await db.update(chats).set({ lastMessageText: preview, lastMessageAt: timestamp, lastMessageFromMe: true }).where(eq(chats.id, id));
+  await db.update(chats).set({
+    lastMessageText: previewText,
+    lastMessageAt: timestamp,
+    lastMessageFromMe: true,
+    updatedAt: new Date(),
+  }).where(eq(chats.id, id));
 
   if (newMessage) {
-    await pusherServer.trigger('team-channel', 'new-message', { chatId: id, message: { ...newMessage, timestamp: timestamp.toISOString() } }).catch(() => {});
-    await pusherServer.trigger('team-channel', 'chat-update', { chatId: id }).catch(() => {});
+    broadcastToTeam(ctx.teamId, 'new-message', {
+      chatId: id,
+      message: { ...newMessage, timestamp: timestamp.toISOString() },
+    });
+    broadcastToTeam(ctx.teamId, 'chat-update', { chatId: id });
   }
 
   if (status === 'failed') {

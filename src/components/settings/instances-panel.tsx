@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/form-elements';
 import { Plus, Smartphone, Trash2, Loader2, QrCode, RefreshCw, Wifi, WifiOff, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { usePusherChannel } from '@/hooks/use-pusher';
+import { useSSE } from '@/hooks/use-sse';
 
 type InstanceItem = {
   id: number;
@@ -37,7 +37,7 @@ export function InstancesPanel() {
   const [connectingId, setConnectingId] = useState<number | null>(null);
 
   // استقبال QR من Pusher عند QRCODE_UPDATED
-  usePusherChannel('team-channel', {
+  useSSE({
     'qr-update': (data: { instanceId: number; instanceName: string; qr: string }) => {
       // لو الديالوج مفتوح لهذا الـ instance، حدّث الـ QR
       setQrState((prev) => {
@@ -61,6 +61,18 @@ export function InstancesPanel() {
       }
     },
   });
+
+  async function handleSync(id: number) {
+    toast.loading('جاري مزامنة المحادثات...');
+    const res = await fetch(`/api/instances/${id}/sync`, { method: 'POST' });
+    const data = await res.json();
+    toast.dismiss();
+    if (!res.ok) {
+      toast.error(data.error || 'فشلت المزامنة');
+    } else {
+      toast.success(`تمت المزامنة — ${data.synced} محادثة`);
+    }
+  }
 
   async function handleConnect(inst: InstanceItem) {
     setConnectingId(inst.id);
