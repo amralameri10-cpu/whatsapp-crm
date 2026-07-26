@@ -1,0 +1,104 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@/lib/db/drizzle';
+import { campaigns, chats, contacts, instances, messages } from '@/lib/db/schema';
+import { and, count, eq, inArray, or } from 'drizzle-orm';
+import { getUserContext } from '@/lib/db/queries';
+import { getEvolutionConfig, EvolutionClient } from '@/lib/whatsapp/evolution-client';
+import { broadcastToTeam } from '@/lib/sse';
+
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const instanceId = Number.parseInt(id, 10);
+  if (!Number.isInteger(instanceId)) {
+    return NextResponse.json({ error: 'معرف الإنستنس غير صالح' }, { status: 400 });
+  }
+
+  const ctx = await getUserContext();
+  if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!ctx.isTeamAdmin) {
+    return NextResponse.json({ error: 'فقط المسؤول يمكنه حذف الإنستنس' }, { status: 403 });
+  }
+
+  const instance = await db.query.instances.findFirst({
+    where: and(eq(instances.id, instanceId), eq(instances.teamId, ctx.teamId)),
+  });
+  if (!instance) {
+    return NextResponse.json({ error: 'الإنستنس غير موجود' }, { status: 404 });
+  }
+
+  // حذف Evolution مستقل عن قاعدة البيانات: حتى إن كان الخادم غير متاح،
+  // يجب ألا تبقى بيانات الإنستنس المحلية معلقة داخل CRM.
+  let evolutionDeleted = false;
+  let evolutionWarning: string | null = null;
+  try {
+    const config = await getEvolutionConfig(ctx.teamId);
+    if (config.apiUrl && config.apiKey) {
+      const client = new EvolutionClient(config.apiUrl, config.apiKey);
+      await client.logoutInstance(instance.instanceName).catch(() => undefined);
+      await client.deleteInstance(instance.instanceName);
+      evolutionDeleted = true;
+    } else {
+      evolutionWarning = 'لم يتم حذف الإنستنس من Evolution لأن إعدادات الاتصال غير مكتملة';
+    }
+  } catch (error) {
+    evolutionWarning = error instanceof Error ? error.message : 'تعذر حذف الإنستنس من Evolution';
+    console.warn('[Instance Delete - Evolution]', error);
+  }
+
+  const deleted = await db.transaction(async (tx) => {
+    const chatRows = await tx
+      .select({ id: chats.id })
+      .from(chats)
+      .where(and(eq(chats.instanceId, instance.id), eq(chats.teamId, ctx.teamId)));
+    const chatIds = chatRows.map((row) => row.id);
+
+    const contactCondition = chatIds.length > 0
+      ? or(eq(contacts.instanceId, instance.id), inArray(contacts.chatId, chatIds))!
+      : eq(contacts.instanceId, instance.id);
+
+    const [contactTotal] = await tx
+      .select({ value: count() })
+      .from(contacts)
+      .where(contactCondition);
+
+    const [messageTotal] = chatIds.length > 0
+      ? await tx.select({ value: count() }).from(messages).where(inArray(messages.chatId, chatIds))
+      : [{ value: 0 }];
+
+    const [campaignTotal] = await tx
+      .select({ value: count() })
+      .from(campaigns)
+      .where(eq(campaigns.instanceId, instance.id));
+
+    // نحذف جهات الاتصال صراحةً لمعالجة السجلات القديمة التي كانت علاقتها
+    // بالمحادثة ON DELETE SET NULL. البقية تُحذف تلقائياً بواسطة CASCADE:
+    // chats -> messages, pending_messages, chat_tags
+    // campaigns -> campaign_leads
+    await tx.delete(contacts).where(contactCondition);
+    await tx.delete(instances).where(
+      and(eq(instances.id, instance.id), eq(instances.teamId, ctx.teamId)),
+    );
+
+    return {
+      chats: chatIds.length,
+      messages: Number(messageTotal.value || 0),
+      contacts: Number(contactTotal.value || 0),
+      campaigns: Number(campaignTotal.value || 0),
+    };
+  });
+
+  broadcastToTeam(ctx.teamId, 'instance-deleted', {
+    instanceId: instance.id,
+    deleted,
+  });
+
+  return NextResponse.json({
+    success: true,
+    deleted,
+    evolutionDeleted,
+    warning: evolutionWarning,
+  });
+}
