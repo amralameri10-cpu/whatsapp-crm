@@ -123,159 +123,172 @@ export async function POST(req: NextRequest) {
           : [data];
 
     for (const messageRecord of incoming) {
-      const remoteJid = getMessageRemoteJid(messageRecord);
-      if (!remoteJid || remoteJid === 'status@broadcast') continue;
+      try {
+        const remoteJid = getMessageRemoteJid(messageRecord);
+        if (!remoteJid || remoteJid === 'status@broadcast') continue;
 
-      const messageId = messageRecord?.key?.id || messageRecord?.id;
-      if (!messageId) continue;
+        const messageId = messageRecord?.key?.id || messageRecord?.id;
+        if (!messageId) continue;
 
-      const fromMe = !!(messageRecord?.key?.fromMe ?? messageRecord?.fromMe);
-      const isGroup = isGroupJid(remoteJid);
-      const phone = isGroup ? '' : phoneFromMessage(messageRecord, remoteJid);
-      const pushName = cleanDisplayName(
-        messageRecord?.pushName,
-        messageRecord?.senderName,
-        getEvolutionName(messageRecord),
-      );
+        const fromMe = !!(messageRecord?.key?.fromMe ?? messageRecord?.fromMe);
+        const isGroup = isGroupJid(remoteJid);
+        const phone = isGroup ? '' : phoneFromMessage(messageRecord, remoteJid);
+        const pushName = cleanDisplayName(
+          messageRecord?.pushName,
+          messageRecord?.senderName,
+          getEvolutionName(messageRecord),
+        );
 
-      let chat = await db.query.chats.findFirst({
-        where: and(eq(chats.remoteJid, remoteJid), eq(chats.instanceId, instance.id)),
-      });
-
-      // A LID webhook can refer to an existing phone-JID chat; match it by the
-      // real phone number instead of creating a duplicate conversation.
-      if (!chat && phone) {
-        chat = await db.query.chats.findFirst({
-          where: and(eq(chats.phoneNumber, phone), eq(chats.instanceId, instance.id)),
+        let chat = await db.query.chats.findFirst({
+          where: and(eq(chats.remoteJid, remoteJid), eq(chats.instanceId, instance.id)),
         });
-        if (chat && chat.remoteJid !== remoteJid) {
-          const [updated] = await db.update(chats).set({ remoteJid, updatedAt: new Date() })
-            .where(eq(chats.id, chat.id)).returning();
-          chat = updated;
-        }
-      }
 
-      if (!chat) {
-        const [created] = await db.insert(chats).values({
-          teamId: instance.teamId,
-          instanceId: instance.id,
-          remoteJid,
-          name: isGroup ? 'مجموعة واتساب' : pushName || phone || null,
-          phoneNumber: isGroup ? null : phone || null,
-          isGroup,
-          unreadCount: 0,
-          isOpen: true,
-        }).returning();
-        chat = created;
-      } else {
-        const betterName = !isGroup && pushName && (!chat.name || isJidOrGroupId(chat.name));
-        await db.update(chats).set({
-          ...(betterName ? { name: pushName } : {}),
-          ...(!isGroup && phone && !chat.phoneNumber ? { phoneNumber: phone } : {}),
-          isOpen: true,
-          updatedAt: new Date(),
-        }).where(eq(chats.id, chat.id));
-      }
-
-      if (!isGroup && phone) {
-        await upsertWebhookContact(instance.teamId, instance.id, chat.id, phone, pushName);
-      }
-
-      const content = normalizeMessageContent(messageRecord);
-      if (content.messageType === 'protocol') continue;
-      const timestamp = messageTimestamp(messageRecord);
-
-      // تحديد نوع الوسائط
-      const isMedia = [
-        'image', 'video', 'audio', 'document', 'sticker',
-      ].includes(content.messageType);
-
-      // لا نخزّن base64 ضخم في عمود media_url — نضعه في message_media بدلاً من ذلك
-      // نحتفظ فقط بـ HTTP URL لو كان متاحاً كـ fallback
-      const mediaUrlToStore = content.mediaUrl?.startsWith('http')
-        ? content.mediaUrl
-        : null;
-
-      const [newMessage] = await db.insert(messages).values({
-        id: String(messageId),
-        chatId: chat.id,
-        fromMe,
-        senderName: pushName,
-        messageType: content.messageType,
-        text: content.text,
-        mediaUrl: mediaUrlToStore,
-        mediaMimetype: content.mediaMimetype,
-        mediaCaption: content.mediaCaption,
-        quotedMessageId: content.quotedMessageId,
-        quotedText: content.quotedText,
-        status: fromMe ? 'sent' : 'delivered',
-        timestamp,
-      }).onConflictDoNothing().returning();
-
-      if (!newMessage) continue;
-
-      // حفظ الوسائط بشكل دائم في message_media
-      if (isMedia && content.mediaUrl) {
-        let binaryBuffer: Buffer | null = null;
-        let mimetype = content.mediaMimetype || 'application/octet-stream';
-        let fileName = content.mediaCaption || null;
-
-        if (content.mediaUrl.startsWith('data:')) {
-          // base64 مضمّن في الـ webhook مباشرة
-          const match = content.mediaUrl.match(/^data:([^;]+);base64,(.+)$/);
-          if (match) {
-            binaryBuffer = Buffer.from(match[2], 'base64');
-            if (!mimetype || mimetype === 'application/octet-stream') mimetype = match[1];
+        // A LID webhook can refer to an existing phone-JID chat; match it by the
+        // real phone number instead of creating a duplicate conversation.
+        if (!chat && phone) {
+          chat = await db.query.chats.findFirst({
+            where: and(eq(chats.phoneNumber, phone), eq(chats.instanceId, instance.id)),
+          });
+          if (chat && chat.remoteJid !== remoteJid) {
+            const [updated] = await db.update(chats).set({ remoteJid, updatedAt: new Date() })
+              .where(eq(chats.id, chat.id)).returning();
+            chat = updated;
           }
-        } else if (content.mediaUrl.startsWith('http://') || content.mediaUrl.startsWith('https://')) {
-          // جلب الـ base64 من Evolution API
+        }
+
+        if (!chat) {
+          const [created] = await db.insert(chats).values({
+            teamId: instance.teamId,
+            instanceId: instance.id,
+            remoteJid,
+            name: isGroup ? 'مجموعة واتساب' : pushName || phone || null,
+            phoneNumber: isGroup ? null : phone || null,
+            isGroup,
+            unreadCount: 0,
+            isOpen: true,
+          }).returning();
+          chat = created;
+        } else {
+          const betterName = !isGroup && pushName && (!chat.name || isJidOrGroupId(chat.name));
+          await db.update(chats).set({
+            ...(betterName ? { name: pushName } : {}),
+            ...(!isGroup && phone && !chat.phoneNumber ? { phoneNumber: phone } : {}),
+            isOpen: true,
+            updatedAt: new Date(),
+          }).where(eq(chats.id, chat.id));
+        }
+
+        // حفظ جهة الاتصال ثانوي — فشله ما يجب يمنع حفظ الرسالة نفسها،
+        // فهذا كان سبب ضياع رسائل كاملة من الـ webhook عند أي خطأ بسيط.
+        if (!isGroup && phone) {
           try {
-            const client = await import('@/lib/whatsapp/evolution-client');
-            const evoClient = await client.getEvolutionClient(instance.teamId);
-            const fetched = await evoClient.getBase64FromMediaMessage(
-              instance.instanceName,
-              String(messageId),
-              content.messageType === 'video' || content.messageType === 'audio',
-            );
-            if (fetched?.base64) {
-              binaryBuffer = Buffer.from(fetched.base64, 'base64');
-              if (fetched.mimetype) mimetype = fetched.mimetype;
-              if (fetched.fileName) fileName = fetched.fileName || content.mediaCaption;
-            }
-          } catch {
-            // في حال فشل استرجاع الوسائط، نستمر — يظهر HTTP URL كـ fallback
+            await upsertWebhookContact(instance.teamId, instance.id, chat.id, phone, pushName);
+          } catch (contactError) {
+            console.error('[Webhook Contact]', remoteJid, contactError);
           }
         }
 
-        if (binaryBuffer) {
-          await db.insert(messageMedia).values({
-            messageId: String(messageId),
-            data: binaryBuffer,
-            mimetype,
-            fileName,
-            size: binaryBuffer.length,
-          }).onConflictDoNothing();
+        const content = normalizeMessageContent(messageRecord);
+        if (content.messageType === 'protocol') continue;
+        const timestamp = messageTimestamp(messageRecord);
+
+        // تحديد نوع الوسائط
+        const isMedia = [
+          'image', 'video', 'audio', 'document', 'sticker',
+        ].includes(content.messageType);
+
+        // لا نخزّن base64 ضخم في عمود media_url — نضعه في message_media بدلاً من ذلك
+        // نحتفظ فقط بـ HTTP URL لو كان متاحاً كـ fallback
+        const mediaUrlToStore = content.mediaUrl?.startsWith('http')
+          ? content.mediaUrl
+          : null;
+
+        const [newMessage] = await db.insert(messages).values({
+          id: String(messageId),
+          chatId: chat.id,
+          fromMe,
+          senderName: pushName,
+          messageType: content.messageType,
+          text: content.text,
+          mediaUrl: mediaUrlToStore,
+          mediaMimetype: content.mediaMimetype,
+          mediaCaption: content.mediaCaption,
+          quotedMessageId: content.quotedMessageId,
+          quotedText: content.quotedText,
+          status: fromMe ? 'sent' : 'delivered',
+          timestamp,
+        }).onConflictDoNothing().returning();
+
+        if (!newMessage) continue;
+
+        // حفظ الوسائط بشكل دائم في message_media
+        if (isMedia && content.mediaUrl) {
+          let binaryBuffer: Buffer | null = null;
+          let mimetype = content.mediaMimetype || 'application/octet-stream';
+          let fileName = content.mediaCaption || null;
+
+          if (content.mediaUrl.startsWith('data:')) {
+            // base64 مضمّن في الـ webhook مباشرة
+            const match = content.mediaUrl.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              binaryBuffer = Buffer.from(match[2], 'base64');
+              if (!mimetype || mimetype === 'application/octet-stream') mimetype = match[1];
+            }
+          } else if (content.mediaUrl.startsWith('http://') || content.mediaUrl.startsWith('https://')) {
+            // جلب الـ base64 من Evolution API
+            try {
+              const client = await import('@/lib/whatsapp/evolution-client');
+              const evoClient = await client.getEvolutionClient(instance.teamId);
+              const fetched = await evoClient.getBase64FromMediaMessage(
+                instance.instanceName,
+                String(messageId),
+                content.messageType === 'video' || content.messageType === 'audio',
+              );
+              if (fetched?.base64) {
+                binaryBuffer = Buffer.from(fetched.base64, 'base64');
+                if (fetched.mimetype) mimetype = fetched.mimetype;
+                if (fetched.fileName) fileName = fetched.fileName || content.mediaCaption;
+              }
+            } catch {
+              // في حال فشل استرجاع الوسائط، نستمر — يظهر HTTP URL كـ fallback
+            }
+          }
+
+          if (binaryBuffer) {
+            await db.insert(messageMedia).values({
+              messageId: String(messageId),
+              data: binaryBuffer,
+              mimetype,
+              fileName,
+              size: binaryBuffer.length,
+            }).onConflictDoNothing();
+          }
         }
-      }
 
-      await db.update(chats).set({
-        lastMessageText: previewText(content),
-        lastMessageAt: timestamp,
-        lastMessageFromMe: fromMe,
-        updatedAt: new Date(),
-        unreadCount: fromMe ? chat.unreadCount || 0 : (chat.unreadCount || 0) + 1,
-      }).where(eq(chats.id, chat.id));
+        await db.update(chats).set({
+          lastMessageText: previewText(content),
+          lastMessageAt: timestamp,
+          lastMessageFromMe: fromMe,
+          updatedAt: new Date(),
+          unreadCount: fromMe ? chat.unreadCount || 0 : (chat.unreadCount || 0) + 1,
+        }).where(eq(chats.id, chat.id));
 
-      broadcastToTeam(instance.teamId, 'new-message', {
-        chatId: chat.id,
-        message: { ...newMessage, timestamp: timestamp.toISOString() },
-      });
-      broadcastToTeam(instance.teamId, 'chat-update', { chatId: chat.id });
+        broadcastToTeam(instance.teamId, 'new-message', {
+          chatId: chat.id,
+          message: { ...newMessage, timestamp: timestamp.toISOString() },
+        });
+        broadcastToTeam(instance.teamId, 'chat-update', { chatId: chat.id });
 
-      if (!fromMe && content.text) {
-        import('@/lib/automation/engine')
-          .then(({ runAutomationForMessage }) => runAutomationForMessage(chat!.id, content.text!).catch(() => {}))
-          .catch(() => {});
+        if (!fromMe && content.text) {
+          import('@/lib/automation/engine')
+            .then(({ runAutomationForMessage }) => runAutomationForMessage(chat!.id, content.text!).catch(() => {}))
+            .catch(() => {});
+        }
+      } catch (messageError) {
+        // نعزل خطأ رسالة واحدة عن بقية الدفعة — قبل هذا التعديل كان أي
+        // خطأ (حتى مؤقت) في رسالة واحدة يوقف معالجة كل الرسائل الأخرى
+        // في نفس الدفعة، وهذا كان يسبب ضياع رسائل ويحتاج مزامنة يدوية.
+        console.error('[Webhook Message]', messageRecord?.key?.id || messageRecord?.id, messageError);
       }
     }
 
