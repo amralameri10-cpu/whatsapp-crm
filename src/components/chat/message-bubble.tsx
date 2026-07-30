@@ -43,7 +43,7 @@ function useMediaSrc(message: MessageItem) {
   const fallbackSrc = message.mediaUrl && !error ? message.mediaUrl : null;
   const src = apiSrc || fallbackSrc;
 
-  const handleError = () => {
+  const handleError = (_?: any) => {
     if (apiSrc && !apiError) {
       setApiError(true); // جرّب الـ fallback
     } else {
