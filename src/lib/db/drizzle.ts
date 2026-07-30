@@ -3,15 +3,30 @@ import postgres from 'postgres';
 import * as schema from './schema';
 
 function createDb() {
-  if (!process.env.DATABASE_URL) {
+  const url = process.env.DATABASE_URL;
+
+  if (!url) {
     if (process.env.NODE_ENV === 'production') {
-      throw new Error('DATABASE_URL is not set');
+      throw new Error(
+        '❌ DATABASE_URL غير موجود في متغيرات البيئة. ' +
+        'أضفه في EasyPanel → Service → Environment Variables'
+      );
     }
-    // During build, return a placeholder — never called at build time
+    // During build without DB, return placeholder
     return null as any;
   }
-  const client = postgres(process.env.DATABASE_URL, { prepare: false });
-  return drizzle(client, { schema });
+
+  try {
+    const client = postgres(url, {
+      prepare: false,
+      connect_timeout: 10,
+      idle_timeout: 30,
+      max_lifetime: 1800,
+    });
+    return drizzle(client, { schema });
+  } catch (err: any) {
+    throw new Error(`❌ فشل الاتصال بقاعدة البيانات: ${err?.message || err}`);
+  }
 }
 
 export const db = createDb();
