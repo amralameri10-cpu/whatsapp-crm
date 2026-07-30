@@ -26,8 +26,8 @@ type MessagesPage = {
 type TeamMember = {
   id: number;
   userId: number;
-  userName: string | null;
-  userEmail: string | null;
+  name: string | null;
+  email: string | null;
   role: string;
 };
 
@@ -81,7 +81,8 @@ export function ChatShell({
     fetcher,
     { refreshInterval: 10000 },
   );
-  const { data: members } = useSWR<TeamMember[]>('/api/team/members', fetcher);
+  const { data: membersData } = useSWR<{ members: TeamMember[]; invitations: any[] }>('/api/team/members', fetcher);
+  const members = membersData?.members;
 
   useEffect(() => {
     initializedChatRef.current = null;
@@ -302,8 +303,8 @@ export function ChatShell({
       toast.error(data.error || 'فشل الإسناد');
       return;
     }
-    toast.success(`تم إسناد المحادثة إلى ${member.userName || 'الموظف'}`);
-    setActiveChat({ ...activeChat, assignedUserId: member.userId, assignedUserName: member.userName });
+    toast.success(`تم إسناد المحادثة إلى ${member.name || 'الموظف'}`);
+    setActiveChat({ ...activeChat, assignedUserId: member.userId, assignedUserName: member.name });
     mutateChats();
     setShowAssignMenu(false);
     setAssignSearch('');
@@ -332,10 +333,10 @@ export function ChatShell({
   const visibleChats = (chats || []).filter((chat) => canViewAllChats || chat.assignedUserId === currentUserId);
 
   const filteredMembers = (members || []).filter((m) => {
-    if (!m.userName) return false;
+    if (!m.name) return false;
     if (m.userId === currentUserId) return false; // لا يسند لنفسه
     const query = assignSearch.toLowerCase();
-    return !query || m.userName.toLowerCase().includes(query);
+    return !query || m.name.toLowerCase().includes(query);
   });
 
   const timeline: { type: 'msg' | 'pending'; data: MessageItem | PendingMessageItem; ts: string }[] = [
@@ -437,9 +438,9 @@ export function ChatShell({
                                   member.userId === activeChat.assignedUserId && 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20'
                                 )}
                               >
-                                <Avatar name={member.userName} size={24} />
+                                <Avatar name={member.name} size={24} />
                                 <div className="text-right">
-                                  <div className="font-medium">{member.userName}</div>
+                                  <div className="font-medium">{member.name}</div>
                                   <div className="text-[10px] opacity-60">{member.role}</div>
                                 </div>
                               </button>
