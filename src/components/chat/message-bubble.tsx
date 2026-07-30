@@ -35,8 +35,23 @@ function StatusIcon({ status }: { status: string }) {
 
 function useMediaSrc(message: MessageItem) {
   const [error, setError] = useState(false);
-  const src = message.mediaUrl || (message.id ? `/api/media/${encodeURIComponent(message.id)}` : null);
-  return { src: error ? null : src, setError };
+  const [apiError, setApiError] = useState(false);
+
+  // نفضّل /api/media أولاً لأنه موثوق وما يحمّل base64 ثقيل في الذاكرة
+  // نرجع لـ mediaUrl كـ fallback لو فشل الـ API أو لم يكن ID متاحاً
+  const apiSrc = message.id && !apiError ? `/api/media/${encodeURIComponent(message.id)}` : null;
+  const fallbackSrc = message.mediaUrl && !error ? message.mediaUrl : null;
+  const src = apiSrc || fallbackSrc;
+
+  const handleError = () => {
+    if (apiSrc && !apiError) {
+      setApiError(true); // جرّب الـ fallback
+    } else {
+      setError(true); // فشل كل شيء
+    }
+  };
+
+  return { src, setError: handleError };
 }
 
 export function MessageBubble({ message }: { message: MessageItem }) {

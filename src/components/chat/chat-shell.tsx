@@ -23,16 +23,12 @@ type MessagesPage = {
   syncError?: string | null;
 };
 
-type MemberResponse = {
-  members: {
-    id: number;
-    userId: number;
-    name: string | null;
-    email: string | null;
-    role: string;
-    isSuperAdmin: boolean;
-  }[];
-  invitations: any[];
+type TeamMember = {
+  id: number;
+  userId: number;
+  userName: string | null;
+  userEmail: string | null;
+  role: string;
 };
 
 function mergeMessages(...lists: MessageItem[][]): MessageItem[] {
@@ -75,7 +71,7 @@ export function ChatShell({
   const initializedChatRef = useRef<number | null>(null);
   const scrollToBottomRef = useRef(false);
 
-  const { data: chats, mutate: mutateChats } = useSWR<ChatListItem[]>('/api/chats', fetcher, { refreshInterval: 15000 });
+  const { data: chats, mutate: mutateChats } = useSWR<ChatListItem[]>('/api/chats', fetcher, { refreshInterval: 8000 });
   const { data: initialPage, mutate: mutateMessagesPage, isLoading: loadingInitial } = useSWR<MessagesPage>(
     activeChat ? `/api/chats/${activeChat.id}/messages?limit=50` : null,
     fetcher,
@@ -85,7 +81,7 @@ export function ChatShell({
     fetcher,
     { refreshInterval: 10000 },
   );
-  const { data: membersData } = useSWR<MemberResponse>('/api/team/members', fetcher);
+  const { data: members } = useSWR<TeamMember[]>('/api/team/members', fetcher);
 
   useEffect(() => {
     initializedChatRef.current = null;
@@ -294,7 +290,7 @@ export function ChatShell({
     mutateChats();
   }
 
-  async function assignToMember(member: MemberResponse['members'][number]) {
+  async function assignToMember(member: TeamMember) {
     if (!activeChat) return;
     const response = await fetch(`/api/chats/${activeChat.id}`, {
       method: 'PATCH',
@@ -306,8 +302,8 @@ export function ChatShell({
       toast.error(data.error || 'فشل الإسناد');
       return;
     }
-    toast.success(`تم إسناد المحادثة إلى ${member.name || 'الموظف'}`);
-    setActiveChat({ ...activeChat, assignedUserId: member.userId, assignedUserName: member.name });
+    toast.success(`تم إسناد المحادثة إلى ${member.userName || 'الموظف'}`);
+    setActiveChat({ ...activeChat, assignedUserId: member.userId, assignedUserName: member.userName });
     mutateChats();
     setShowAssignMenu(false);
     setAssignSearch('');
@@ -335,11 +331,11 @@ export function ChatShell({
   const effectiveRequireApproval = activeChat?.requireApproval || individualRequireApproval;
   const visibleChats = (chats || []).filter((chat) => canViewAllChats || chat.assignedUserId === currentUserId);
 
-  const filteredMembers = (membersData?.members || []).filter((m) => {
-    if (!m.name) return false;
+  const filteredMembers = (members || []).filter((m) => {
+    if (!m.userName) return false;
     if (m.userId === currentUserId) return false; // لا يسند لنفسه
     const query = assignSearch.toLowerCase();
-    return !query || m.name.toLowerCase().includes(query);
+    return !query || m.userName.toLowerCase().includes(query);
   });
 
   const timeline: { type: 'msg' | 'pending'; data: MessageItem | PendingMessageItem; ts: string }[] = [
@@ -441,9 +437,9 @@ export function ChatShell({
                                   member.userId === activeChat.assignedUserId && 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20'
                                 )}
                               >
-                                <Avatar name={member.name || ''} size={24} />
+                                <Avatar name={member.userName} size={24} />
                                 <div className="text-right">
-                                  <div className="font-medium">{member.name}</div>
+                                  <div className="font-medium">{member.userName}</div>
                                   <div className="text-[10px] opacity-60">{member.role}</div>
                                 </div>
                               </button>

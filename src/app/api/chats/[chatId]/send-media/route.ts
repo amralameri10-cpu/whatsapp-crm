@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db/drizzle';
-import { chats, instances, messages } from '@/lib/db/schema';
+import { chats, instances, messages, messageMedia } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getUserContext } from '@/lib/db/queries';
 import { getEvolutionConfig, EvolutionClient } from '@/lib/whatsapp/evolution-client';
@@ -127,6 +127,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cha
     status,
     timestamp,
   }).onConflictDoNothing().returning();
+
+  // حفظ الملف في message_media لعرضه لاحقاً دون الحاجة لـ Evolution
+  if (newMessage && status === 'sent') {
+    try {
+      await db.insert(messageMedia).values({
+        messageId: messageId,
+        data: buffer,
+        mimetype: mime,
+        fileName: file.name || null,
+        size: buffer.length,
+      }).onConflictDoNothing();
+    } catch {
+      // حفظ الوسائط اختياري - الرسالة تم إرسالها بنجاح حتى لو فشل الحفظ
+    }
+  }
 
   if (status === 'sent') {
     await db.update(chats).set({

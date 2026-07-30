@@ -185,6 +185,17 @@ export async function POST(req: NextRequest) {
       if (content.messageType === 'protocol') continue;
       const timestamp = messageTimestamp(messageRecord);
 
+      // تحديد نوع الوسائط
+      const isMedia = [
+        'image', 'video', 'audio', 'document', 'sticker',
+      ].includes(content.messageType);
+
+      // لا نخزّن base64 ضخم في عمود media_url — نضعه في message_media بدلاً من ذلك
+      // نحتفظ فقط بـ HTTP URL لو كان متاحاً كـ fallback
+      const mediaUrlToStore = content.mediaUrl?.startsWith('http')
+        ? content.mediaUrl
+        : null;
+
       const [newMessage] = await db.insert(messages).values({
         id: String(messageId),
         chatId: chat.id,
@@ -192,7 +203,7 @@ export async function POST(req: NextRequest) {
         senderName: pushName,
         messageType: content.messageType,
         text: content.text,
-        mediaUrl: content.mediaUrl,
+        mediaUrl: mediaUrlToStore,
         mediaMimetype: content.mediaMimetype,
         mediaCaption: content.mediaCaption,
         quotedMessageId: content.quotedMessageId,
@@ -203,22 +214,21 @@ export async function POST(req: NextRequest) {
 
       if (!newMessage) continue;
 
-      // حفظ الوسائط بشكل دائم (base64 أو url).
-      // نستخدم getBase64FromMediaMessage من Evolution عند غياب dataUrl.
-      const isMedia = [
-        'image', 'video', 'audio', 'document', 'sticker',
-      ].includes(content.messageType);
+      // حفظ الوسائط بشكل دائم في message_media
       if (isMedia && content.mediaUrl) {
         let binaryBuffer: Buffer | null = null;
         let mimetype = content.mediaMimetype || 'application/octet-stream';
         let fileName = content.mediaCaption || null;
+
         if (content.mediaUrl.startsWith('data:')) {
+          // base64 مضمّن في الـ webhook مباشرة
           const match = content.mediaUrl.match(/^data:([^;]+);base64,(.+)$/);
           if (match) {
             binaryBuffer = Buffer.from(match[2], 'base64');
             if (!mimetype || mimetype === 'application/octet-stream') mimetype = match[1];
           }
         } else if (content.mediaUrl.startsWith('http://') || content.mediaUrl.startsWith('https://')) {
+          // جلب الـ base64 من Evolution API
           try {
             const client = await import('@/lib/whatsapp/evolution-client');
             const evoClient = await client.getEvolutionClient(instance.teamId);
@@ -233,9 +243,10 @@ export async function POST(req: NextRequest) {
               if (fetched.fileName) fileName = fetched.fileName || content.mediaCaption;
             }
           } catch {
-            // في حال فشل استرجاع الوسائط من Evolution، نستمر دون تخزين دائم.
+            // في حال فشل استرجاع الوسائط، نستمر — يظهر HTTP URL كـ fallback
           }
         }
+
         if (binaryBuffer) {
           await db.insert(messageMedia).values({
             messageId: String(messageId),
