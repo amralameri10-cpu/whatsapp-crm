@@ -35,6 +35,7 @@ export function InstancesPanel() {
   const [createOpen, setCreateOpen] = useState(false);
   const [qrState, setQrState] = useState<QRState | null>(null);
   const [connectingId, setConnectingId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   // استقبال QR من Pusher عند QRCODE_UPDATED
   useSSE({
@@ -83,14 +84,25 @@ export function InstancesPanel() {
 
   async function handleSync(id: number) {
     toast.loading('جاري مزامنة المحادثات...');
-    const res = await fetch(`/api/instances/${id}/sync`, { method: 'POST' });
-    const data = await res.json();
-    toast.dismiss();
-    if (!res.ok) {
-      toast.error(data.error || 'فشلت المزامنة');
-    } else {
-      const repaired = data.repaired ? `، وإصلاح ${data.repaired} سجل قديم` : '';
-      toast.success(`تمت المزامنة: ${data.synced || 0} محادثة، ${data.contacts || 0} جهة اتصال، ${data.messages || 0} رسالة${repaired}`);
+    try {
+      const res = await fetch(`/api/instances/${id}/sync`, { method: 'POST' });
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        data = {};
+      }
+      if (!res.ok) {
+        toast.error(data.error || 'فشلت المزامنة، حاول مجدداً');
+      } else {
+        const repaired = data.repaired ? `، وإصلاح ${data.repaired} سجل قديم` : '';
+        toast.success(`تمت المزامنة: ${data.synced || 0} محادثة، ${data.contacts || 0} جهة اتصال، ${data.messages || 0} رسالة${repaired}`);
+        mutate();
+      }
+    } catch (error) {
+      toast.error('تعذر الاتصال بالسيرفر أثناء المزامنة، حاول مجدداً');
+    } finally {
+      toast.dismiss();
     }
   }
 
@@ -138,15 +150,29 @@ export function InstancesPanel() {
 
   async function handleDelete(id: number, name: string) {
     if (!confirm(`هل تريد حذف "${name}"؟ سيتم قطع اتصاله من واتساب.`)) return;
-    const res = await fetch(`/api/instances/${id}/delete`, { method: 'DELETE' });
-    if (!res.ok) {
-      const d = await res.json();
-      toast.error(d.error || 'فشل الحذف');
-      return;
+    setDeletingId(id);
+    try {
+      const res = await fetch(`/api/instances/${id}/delete`, { method: 'DELETE' });
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        // الرد ما كان JSON صالح (مثلاً صفحة خطأ عامة من السيرفر)
+        data = {};
+      }
+      if (!res.ok) {
+        toast.error(data.error || 'فشل الحذف، حاول مجدداً');
+        return;
+      }
+      toast.success('تم الحذف');
+      if (qrState?.instanceId === id) setQrState(null);
+      mutate();
+    } catch (error: any) {
+      // خطأ شبكة/اتصال — لازم نعرض شيء دائماً بدل ما نسكت
+      toast.error('تعذر الاتصال بالسيرفر، تحقق من الاتصال وحاول مجدداً');
+    } finally {
+      setDeletingId(null);
     }
-    toast.success('تم الحذف');
-    if (qrState?.instanceId === id) setQrState(null);
-    mutate();
   }
 
   return (
@@ -223,9 +249,14 @@ export function InstancesPanel() {
                     size="sm"
                     variant="ghost"
                     onClick={() => handleDelete(inst.id, inst.displayName || inst.instanceName)}
+                    disabled={deletingId === inst.id}
                     className="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    {deletingId === inst.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
                   </Button>
                 </div>
               ))}
