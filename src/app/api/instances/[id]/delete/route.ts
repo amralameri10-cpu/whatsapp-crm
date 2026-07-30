@@ -29,22 +29,34 @@ export async function DELETE(
     return NextResponse.json({ error: 'الإنستنس غير موجود' }, { status: 404 });
   }
 
-  // حذف Evolution مستقل عن قاعدة البيانات: حتى إن كان الخادم غير متاح،
-  // يجب ألا تبقى بيانات الإنستنس المحلية معلقة داخل CRM.
+  // حذف Evolution مستقل عن قاعدة البيانات: حتى إن كان الخادم غير متاح
+  // أو الإنستنس غير موجود في Evolution (404)، يكتمل الحذف من DB دائماً.
   let evolutionDeleted = false;
   let evolutionWarning: string | null = null;
   try {
     const config = await getEvolutionConfig(ctx.teamId);
     if (config.apiUrl && config.apiKey) {
       const client = new EvolutionClient(config.apiUrl, config.apiKey);
+      // logout أولاً — نتجاهل الخطأ دائماً (ممكن يكون غير متصل)
       await client.logoutInstance(instance.instanceName).catch(() => undefined);
-      await client.deleteInstance(instance.instanceName);
-      evolutionDeleted = true;
+      try {
+        await client.deleteInstance(instance.instanceName);
+        evolutionDeleted = true;
+      } catch (evoError: any) {
+        // 404 = الإنستنس مش موجود في Evolution — هذا مقبول، نكمل الحذف
+        const status = evoError?.status ?? evoError?.statusCode;
+        if (status === 404 || String(evoError?.message || '').toLowerCase().includes('not found')) {
+          evolutionDeleted = true; // اعتبره محذوف
+        } else {
+          evolutionWarning = evoError instanceof Error ? evoError.message : 'تعذر حذف الإنستنس من Evolution';
+          console.warn('[Instance Delete - Evolution]', evoError);
+        }
+      }
     } else {
       evolutionWarning = 'لم يتم حذف الإنستنس من Evolution لأن إعدادات الاتصال غير مكتملة';
     }
   } catch (error) {
-    evolutionWarning = error instanceof Error ? error.message : 'تعذر حذف الإنستنس من Evolution';
+    evolutionWarning = error instanceof Error ? error.message : 'تعذر الاتصال بـ Evolution';
     console.warn('[Instance Delete - Evolution]', error);
   }
 

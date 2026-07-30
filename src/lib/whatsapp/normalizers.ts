@@ -85,9 +85,15 @@ export function getEvolutionPhone(value: any, remoteJid?: string | null): string
   const candidates = [value?.number, value?.phone, value?.phoneNumber];
   for (const candidate of candidates) {
     const digits = String(candidate || '').replace(/\D/g, '');
-    if (digits.length >= 5) return digits;
+    // رقم الهاتف الدولي: 5 إلى 15 رقم كحد أقصى (معيار ITU-T E.164)
+    if (digits.length >= 5 && digits.length <= 15) return digits;
   }
-  return remoteJid ? jidToPhone(remoteJid) : '';
+  if (remoteJid) {
+    const fromJid = jidToPhone(remoteJid);
+    // نتحقق من الطول أيضاً لما نسحب من JID
+    if (fromJid.length >= 5 && fromJid.length <= 15) return fromJid;
+  }
+  return '';
 }
 
 export function getMessageRemoteJid(message: any): string | null {
